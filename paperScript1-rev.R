@@ -2,8 +2,8 @@
 
 #### Housekeeping
 libs <- c("ggplot2", "RColorBrewer", "glmnet", "caret", "pROC", "permute", "gbm", "randomForest",
-          "plyr", "foreach", "doMC", "psych", "e1071", "dplyr", "nlme", 
-          "psych","stringr")
+          "plyr", "foreach", "doMC", "e1071", "dplyr", "nlme", 
+          "psych","stringr", "r2glmm")
 # libs <- c("caret", "permute", "randomForest", "doMC")
 invisible(lapply(libs, require, character.only = TRUE))
 registerDoMC(detectCores()-1)
@@ -110,6 +110,47 @@ rf.loop     <- lapply(targets, function(i) rfPipeline(i))
 rf.models   <- lapply(rf.loop, function(i) i[[1]])
 rf.perfs    <- lapply(rf.loop, function(i) i[[2]])
 
+
+# check performance in training with covariates
+# rf.pred.cnp  <- lapply(rf.models, function(i) predict(i, newdata=predictors))
+# glm.pred.cnp <- lapply(glm.models, function(i) predict(i, newdata=predictors))
+# 
+# mix.cnp      <- cbind(targets, rf.pred.cnp, glm.pred.cnp, cnp.df[,c("ptid", "age", "gender")]) %>% as.data.frame
+# outcomes.rf  <- NULL  # start empty list
+# outcomes.glm <- NULL
+# for (i in 1:7){outcomes.rf[i] <- paste0(outcomes[i],".rf")}  # rename cols to prevent clash later
+# for (i in 1:7){outcomes.glm[i] <- paste0(outcomes[i],".glm")}
+# 
+# names(mix.cnp)[1:7]   <- outcomes            # renaming using the list of names
+# names(mix.cnp)[8:14]  <- outcomes.rf
+# names(mix.cnp)[15:21] <- outcomes.glm
+# 
+# cnp.pc     <- read.table("/data/swe_gwas/ABZ/ML/cnp_MLsubs_pca.eigenvec", stringsAsFactors = F)
+# mix.cnp.pc <- merge(mix.cnp, cnp.pc, by.x = "ptid", by.y = "V1")
+# 
+# outstats.cnp <- matrix(nrow=7,ncol=5)
+# for (i in 1:length(outcomes)){
+#   f3 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf","+ age + gender + V3 + V4 + V5 + V6 + V7"))
+#   f4 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm","+ age + gender + V3 + V4 + V5 + V6 + V7"))
+#   m1 <- lm(f3, data=mix.cnp.pc, na.action=na.omit)
+#   m2 <- lm(f4, data=mix.cnp.pc, na.action=na.omit)
+#   rf.tval  <- summary(m1)$coefficients[2,3]
+#   glm.tval <- summary(m2)$coefficients[2,3]
+#   outstats.cnp[i,1] <- outcomes[i]
+#   outstats.cnp[i,2] <- rf.tval
+#   outstats.cnp[i,3] <- summary(m1)$coefficients[2,4]
+#   outstats.cnp[i,4] <- sqrt(rf.tval^2/(rf.tval^2+summary(m1)$df[2]))
+#   outstats.cnp[i,5] <- glm.tval
+#   outstats.cnp[i,6] <- summary(m2)$coefficients[2,4]
+#   outstats.cnp[i,7] <- sqrt(glm.tval^2/(glm.tval^2+summary(m2)$df[2]))
+# }
+# 
+# 
+# outstats.cnp        <- as.data.frame(outstats.cnp, stringsAsFactors = F)
+# outstats.cnp[,2:7]  <- lapply(outstats.cnp[,2:7], as.numeric)
+# names(outstats.cnp) <- c("var","tval.rf","pval.rf","r2.rf", "tval.glm","pval.glm", "r2.rf")
+
+
 #### Permutation testing for the RF models
 
 rfPipelinePerm <- function(response, Xmat = predictors, grid = rfGrid, cvpar = fitControl,...){
@@ -139,50 +180,109 @@ bootMe <- function(permutations, target, xmat = predictors,...){
 
 
 
-set.seed(1)
- # test <- bootMe(2, targets$CVLT_TOTCOR, predictors)
+# set.seed(1)
+# test <- bootMe(2, targets$CVLT_TOTCOR, predictors)
 
 # 
 # set.seed(1)
 # perm.loop     <- lapply(select(targets, -CRT_TIME2), function(i) bootMe(2, i, predictors))
 
-
+### loop over bootstraps and phenotypes
+set.seed(1)
 perm.loop     <- lapply(select(targets, CRT_TIME1, VR2DR_TOTALRAW), function(i) bootMe(100, i, predictors))
 CRT1_TIME1.models     <- perm.loop[[1]]
 VR2DR_TOTALRAW.models <- perm.loop[[2]]
 
+### get training performance
+crt1.trainmod  <- lapply(CRT1_TIME1.models, getTrainPerf)
+crt1.trainperf <- list() 
+for (i in 1:100){ crt1.trainperf[[i]] <- crt1.trainmod[[i]][[2]]}
+crt1.trainperf <- unlist(crt1.trainperf)
+summary(crt1.trainperf)
 
+vr2d.trainmod  <- lapply(VR2DR_TOTALRAW.models, getTrainPerf)
+vr2d.trainperf <- list() 
+for (i in 1:100){ vr2d.trainperf[[i]] <- vr2d.trainmod[[i]][[2]]}
+vr2d.trainperf <- unlist(vr2d.trainperf)
+summary(vr2d.trainperf)
+
+
+### get predictions and test in validation sample
+# trails
 p.crt1.predictions  <- lapply(CRT1_TIME1.models, function(x) predict(x, newdata = rep.predictors))
 names(p.crt1.predictions) <- paste0("CRT_TIME1.", 1:100)
 
-p.mix.crt1 <- cbind(rep.outcomes.s, p.crt1.predictions, raw_rep[,c("FID", "age", "sex")]) %>% as.data.frame
+p.mix.crt  <- cbind(rep.outcomes.s, p.crt1.predictions, raw_rep[,c("IID", "FID", "age", "sex")]) %>% as.data.frame
+p.mix.crt1 <- merge(p.mix.crt, PCs, by = "IID")
 
-permstats.p.crt1 <- list()
+permstats.p.crt1 <- matrix(nrow=100,ncol=3)
 for (perm in 1:100){
-  f1.crt1 <- formula(paste0("CRT_TIME1 ~", "CRT_TIME1.", perm, "  + age + sex" ) )
-  m1.crt1 <- nlme::lme(fixed=f1.crt1, random = ~1 | FID, data = p.mix.crt1, na.action = na.omit)
-  permstats.p.crt1[[perm]] <- summary(m1.crt1)$tTable[2,5]
+  f1.crt1 <- formula(paste0("CRT_TIME1 ~ CRT_TIME1.", perm, "  + age + sex + C1 + C2 + C3 + C4 + C5" ) )
+  m1.crt1 <- nlme::lme(fixed=f1.crt1, random = ~1 | FID.x, data = p.mix.crt1, na.action = na.omit)
+  r2m1 = r2beta(m1.crt1,method='sgv')
+  permstats.p.crt1[perm,1] <- summary(m1.crt1)$tTable[2,4]
+  permstats.p.crt1[perm,2] <- summary(m1.crt1)$tTable[2,5]
+  permstats.p.crt1[perm,3] <- r2m1[r2m1$Effect==paste0("CRT_TIME1.", perm), 6]
 }
 
+permstats.p.crt1 <- as.data.frame(permstats.p.crt1) # 7 p < .05; 7/101 = .0693
+names(permstats.p.crt1) <- c("tval","pval", "R2")   # 1 t > 2.75; 1/101 = .0099
+permstats.p.crt1$R      <- sqrt(permstats.p.crt1$R2)
+permstats.p.crt1 <- permstats.p.crt1[order(permstats.p.crt1$pval),]
 
+# vr2d
+p.vr2d.predictions  <- lapply(VR2DR_TOTALRAW.models, function(x) predict(x, newdata = rep.predictors))
+names(p.vr2d.predictions) <- paste0("VR2DR_TOTALRAW.", 1:100)
 
-p.vr2d.predictions  <- lapply(vr2d_TIME1.models, function(x) predict(x, newdata = rep.predictors))
-names(p.vr2d.predictions) <- paste0("CRT_TIME1.", 1:100)
+p.mix.vr2d.1 <- cbind(rep.outcomes.s, p.vr2d.predictions, raw_rep[,c("IID", "FID", "age", "sex")]) %>% as.data.frame
+p.mix.vr2d   <- merge(p.mix.vr2d.1, PCs, by = "IID")
 
-p.mix.vr2d <- cbind(rep.outcomes.s, p.vr2d.predictions, raw_rep[,c("FID", "age", "sex")]) %>% as.data.frame
-
-permstats.p.vr2d <- list()
+permstats.p.vr2d <- matrix(nrow=100,ncol=2)
 for (perm in 1:100){
-  f1.vr2d <- formula(paste0("CRT_TIME1 ~", "CRT_TIME1.", perm, "  + age + sex" ) )
-  m1.vr2d <- nlme::lme(fixed=f1.vr2d, random = ~1 | FID, data = p.mix.vr2d, na.action = na.omit)
-  permstats.p.vr2d[[perm]] <- summary(m1.vr2d)$tTable[2,5]
+  f1.vr2d <- formula(paste0("VR2DR_TOTALRAW ~ VR2DR_TOTALRAW.", perm, "  + age + sex + C1 + C2 + C3 + C4 + C5" ) )
+  m1.vr2d <- nlme::lme(fixed=f1.vr2d, random = ~1 | FID.x, control = lmeControl(opt = "optim"), 
+                       data = p.mix.vr2d, na.action = na.omit)
+  permstats.p.vr2d[perm,1] <- summary(m1.vr2d)$tTable[2,4]
+  permstats.p.vr2d[perm,2] <- summary(m1.vr2d)$tTable[2,5]
 }
 
+permstats.p.vr2d <- as.data.frame(permstats.p.vr2d) # 8 p < .05; 8/101 = .0792
+names(permstats.p.vr2d) <- c("tval","pval")         # 10 t > 1.73; 10/101 = .0990
+permstats.p.vr2d <- permstats.p.vr2d[order(permstats.p.vr2d$pval),]
+  
 save.image(file = "permutations_for_amanda.RData")
 
+### graph permutations
 
+ggplot(permstats.p.crt1,aes(x=tval)) + 
+  geom_histogram(binwidth=.6,aes(fill=..count..)) + 
+  scale_fill_continuous(high="#0000FF",low="#00CCFF") +
+  geom_segment(x=2.75,y=0,xend=2.75,yend=25,linetype="dashed") +
+  theme(axis.title = element_text(size=15, face="bold"),
+        axis.text = element_text(size=13, color="black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        legend.position = "none") +
+  ylab("Frequency") +
+  xlab("Prediction Strength of Permutations")
 
-
+ggplot(permstats.p.vr2d,aes(x=tval)) + 
+  geom_histogram(binwidth=.55,aes(fill=..count..)) + 
+  scale_fill_continuous(high="#0000FF",low="#00CCFF") +
+  geom_segment(x=1.73,y=0,xend=1.73,yend=25,linetype="dashed") +
+  theme(axis.title = element_text(size=15, face="bold"),
+        axis.text = element_text(size=13, color="black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.line.y = element_line(color = "black"),
+        axis.line.x = element_line(color = "black"),
+        legend.position = "none") +
+  ylab("Frequency") +
+  xlab("Prediction Strength of Permutations")
 
 
 #### External Replication
@@ -232,7 +332,7 @@ glm.pred.tr       <- lapply(glm.models, function(i) predict(i, newdata=rep.predi
 ##### Mixed effects models controlling for family ID
 ##### ##### ##### ##### ##### 
 
-mix <- cbind(rep.outcomes.s, rf.pred.tr, glm.pred.tr, raw_rep[,c("FID", "age", "sex")]) %>% as.data.frame
+mix <- cbind(rep.outcomes.s, rf.pred.tr, glm.pred.tr, raw_rep[,c("FID", "IID", "age", "sex", "dx")]) %>% as.data.frame
 
 outcomes.rf <- NULL  # start empty list
 outcomes.glm <- NULL
@@ -242,7 +342,7 @@ for (i in 1:7){outcomes.glm[i] <- paste0(outcomes[i],".glm")}
 names(mix)[1:7]   <- outcomes            # renaming using the list of names
 names(mix)[8:14]  <- outcomes.rf
 names(mix)[15:21] <- outcomes.glm
-names(mix)[22:24] <- c("fid","age","sex")
+names(mix)[22:26] <- c("fid","iid", "age","sex", "dx")
 
 outstats <- matrix(nrow=7,ncol=5)
 for (i in 1:length(outcomes)){
@@ -260,6 +360,151 @@ for (i in 1:length(outcomes)){
 outstats <- as.data.frame(outstats)
 names(outstats) <- c("var","tval.rf","pval.rf","tval.glm","pval.glm")
 
+# add PCs
+PCs    <- read.table("/data/swe_gwas/ABZ/ML/swe_MLsubs2.mds", header=T, stringsAsFactors = F)
+mix.pc <- merge(mix, PCs, by.x = "iid", by.y = "IID")
+
+outstats.pc <- matrix(nrow=7,ncol=11)
+for (i in 1:length(outcomes)){
+  f3 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf","+ age + sex + C1 + C2 + C3 + C4 + C5"))
+  f4 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm","+ age + sex + C1 + C2 + C3 + C4 + C5"))
+  m1 <- lme(fixed=f3, random=~1|fid,data=mix.pc,na.action=na.omit)
+  m2 <- lme(fixed=f4, random=~1|fid,data=mix.pc,na.action=na.omit)
+  r2m1 = r2beta(m1,method='sgv')
+  r2m2 = r2beta(m2,method='sgv')
+  outstats.pc[i,1] <- outcomes[i]
+  outstats.pc[i,2] <- summary(m1)$tTable[2,4]
+  outstats.pc[i,3] <- summary(m1)$tTable[2,5]
+  outstats.pc[i,4] <- r2m1[r2m1$Effect==paste0(outcomes[i],".rf"), 6]
+  outstats.pc[i,5] <- sqrt(mean(m1$residuals^2))
+  outstats.pc[i,6] <- summary(m2)$tTable[2,4]
+  outstats.pc[i,7] <- summary(m2)$tTable[2,5]
+  outstats.pc[i,8] <- r2m2[r2m2$Effect==paste0(outcomes[i],".glm"), 6]
+  outstats.pc[i,9] <- sqrt(mean(m2$residuals^2))
+  outstats.pc[i,10] <- mean(m1$residuals)
+  outstats.pc[i,11] <- mean(m2$residuals)
+}
+
+outstats.pc        <- as.data.frame(outstats.pc, stringsAsFactors = F)
+outstats.pc[,2:11]  <- lapply(outstats.pc[,2:11], as.numeric)
+names(outstats.pc) <- c("var","tval.rf","pval.rf","r2.rf", "rmse.rf", 
+                        "tval.glm","pval.glm", "r2.glm", "rmse.glm",
+                        "mae.rf", "mae.glm")
+
+write.table(outstats.pc, "revision1/originalresults_pcs.txt", col.names=T, row.names=F, sep="\t", quote=F)
+
+outstats.rmse <- matrix(nrow=7,ncol=5)
+for (i in 1:length(outcomes)){
+  f3 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf"))
+  f4 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm"))
+  m1 <- lme(fixed=f3, random=~1|fid, data=mix.pc, control = lmeControl(opt = "optim"), na.action=na.omit)
+  m2 <- lme(fixed=f4, random=~1|fid, data=mix.pc, control = lmeControl(opt = "optim"), na.action=na.omit)
+  outstats.rmse[i,1] <- outcomes[i]
+  outstats.rmse[i,2] <- sqrt(mean(m1$residuals^2))
+  outstats.rmse[i,3] <- sqrt(mean(m2$residuals^2))
+  outstats.rmse[i,4] <- mean(m1$residuals)
+  outstats.rmse[i,5] <- mean(m2$residuals)
+}
+
+outstats.rmse        <- as.data.frame(outstats.rmse, stringsAsFactors = F)
+names(outstats.rmse) <- c("var", "rmse.rf", "rmse.glm", "mae.rf", "mae.glm")
+
+
+outstats.rmse <- matrix(nrow=7,ncol=5)
+for (i in 1:length(outcomes)){
+  f3 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf"))
+  f4 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm"))
+  m1 <- lm(f3, data=mix.pc, na.action=na.omit)
+  m2 <- lm(f4, data=mix.pc, na.action=na.omit)
+  outstats.rmse[i,1] <- outcomes[i]
+  outstats.rmse[i,2] <- sqrt(mean(m1$residuals^2))
+  outstats.rmse[i,3] <- sqrt(mean(m2$residuals^2))
+  outstats.rmse[i,4] <- mean(m1$residuals)
+  outstats.rmse[i,5] <- mean(m2$residuals)
+}
+
+outstats.rmse        <- as.data.frame(outstats.rmse, stringsAsFactors = F)
+names(outstats.rmse) <- c("var", "rmse.rf", "rmse.glm", "mae.rf", "mae.glm")
+
+
+save.image("../results5_amended.RData")
+
+## graph predictions and observed values 
+# trails A
+ggplot(mix, aes(x=CRT_TIME1,y=CRT_TIME1.rf)) + 
+  scale_fill_continuous(high="#0000FF",low="#00CCFF") +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  theme(axis.title = element_text(size=15, face="bold"),
+        axis.text = element_text(size=13, color="black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.text = element_text(size=13, color="black"),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        axis.line.x = element_line(color = "black"),
+        axis.line.y = element_line(color = "black")) +
+  ylab("Predicted Scores (Random Forest)") +
+  xlab("Observed Scores (Scaled)")
+
+ggplot(mix, aes(x=VR2DR_TOTALRAW,y=VR2DR_TOTALRAW.rf)) + 
+  scale_fill_continuous(high="#0000FF",low="#00CCFF") +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  theme(axis.title = element_text(size=15, face="bold"),
+        axis.text = element_text(size=13, color="black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.text = element_text(size=13, color="black"),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        axis.line.x = element_line(color = "black"),
+        axis.line.y = element_line(color = "black")) +
+  ylab("Predicted Scores (Random Forest)") +
+  xlab("Observed Scores (Scaled)")
+
+# in each patient group
+mix.sz <- mix[mix$dx==1,]
+mix.bp <- mix[mix$dx==3,]
+
+outstats.sz <- matrix(nrow=7,ncol=5)
+for (i in 1:length(outcomes)){
+  f1 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf","+ age + sex"))
+  f2 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm","+ age + sex"))
+  m1 <- lme(fixed=f1, random=~1|fid,data=mix.sz,na.action=na.omit)
+  m2 <- lme(fixed=f2, random=~1|fid,data=mix.sz,na.action=na.omit)
+  outstats.sz[i,1] <- outcomes[i]
+  outstats.sz[i,2] <- summary(m1)$tTable[2,4]
+  outstats.sz[i,3] <- summary(m1)$tTable[2,5]
+  outstats.sz[i,4] <- summary(m2)$tTable[2,4]
+  outstats.sz[i,5] <- summary(m2)$tTable[2,5]
+}
+
+outstats.sz <- as.data.frame(outstats.sz)
+names(outstats.sz) <- c("var","tval.rf","pval.rf","tval.glm","pval.glm")
+
+outstats.bp <- matrix(nrow=7,ncol=5)
+for (i in 1:length(outcomes)){
+  f1 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf","+ age + sex"))
+  f2 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm","+ age + sex"))
+  m1 <- lme(fixed=f1, random=~1|fid,data=mix.bp,na.action=na.omit)
+  m2 <- lme(fixed=f2, random=~1|fid,data=mix.bp,na.action=na.omit)
+  outstats.bp[i,1] <- outcomes[i]
+  outstats.bp[i,2] <- summary(m1)$tTable[2,4]
+  outstats.bp[i,3] <- summary(m1)$tTable[2,5]
+  outstats.bp[i,4] <- summary(m2)$tTable[2,4]
+  outstats.bp[i,5] <- summary(m2)$tTable[2,5]
+}
+
+outstats.bp <- as.data.frame(outstats.bp)
+names(outstats.bp) <- c("var","tval.rf","pval.rf","tval.glm","pval.glm")
+
+cor.sz <- cor(mix.sz,use="complete.obs") %>% as.data.frame
+
 # CNP correlations and p-values
 glm.r2     <- unlist(lapply(glm.perfs, function(x) x$TrainRsquared))
 rf.r2      <- unlist(lapply(rf.perfs, function(x) x$TrainRsquared))
@@ -274,26 +519,26 @@ pval <- apply(tval,2,function(x) 2*(1-abs(pt(x,df=737))))
 # scaled, winsorized variables 
 
 # all 6 tasks
-g_all <- principal(rep.outcomes.s[,c(1:3,5:7)], nfactors=1, rotation="none",scores=T)
+g_all <- principal(mix.pc[,c(2:4,6:8)], nfactors=1, rotation="none",scores=T)
 g_all # fit = .97, proportion var = .61
-mix$g_all <- as.numeric(g_all$scores)
+mix.pc$g_all <- as.numeric(g_all$scores)
 
 # leave out trails1
-g_tr1 <- principal(rep.outcomes.s[,c(1:2,5:7)], nfactors=1, rotation="none",scores=T)
+g_tr1 <- principal(mix.pc[,c(2:3,6:8)], nfactors=1, rotation="none",scores=T)
 g_tr1 # fit = .98, proportion var = .72
-mix$g_tr1 <- as.numeric(g_tr1$scores)
+mix.pc$g_tr1 <- as.numeric(g_tr1$scores)
 
 # leave out vr2
-g_vr <- principal(rep.outcomes.s[,c(1:3,5:6)], nfactors=1, rotation="none",scores=T)
+g_vr <- principal(mix.pc[,c(2:4,6:7)], nfactors=1, rotation="none",scores=T)
 g_vr # fit = .96, proportion var = .59
-mix$g_vr <- as.numeric(g_vr$scores)
+mix.pc$g_vr <- as.numeric(g_vr$scores)
 
 # mixed effect models with g vars
-mx.tr1.g <- lme(g_tr1 ~ CRT_TIME1.rf + age + sex, random = ~1 | fid, data = mix, na.action = na.omit)
-mx.vr.g <- lme(g_vr ~ VR2DR_TOTALRAW.rf + age + sex, random = ~1 | fid, data = mix, na.action = na.omit)
+mx.tr1.g <- lme(g_tr1 ~ CRT_TIME1.rf + age + sex + C1 + C2 + C3 + C4 + C5, random = ~1 | fid, data = mix.pc, na.action = na.omit)
+mx.vr.g <- lme(g_vr ~ VR2DR_TOTALRAW.rf + age + sex + C1 + C2 + C3 + C4 + C5, random = ~1 | fid, data = mix.pc, na.action = na.omit)
 
 # to load later
-save.image(file=paste0(workDir,"rev_results.Rdata"))
+save.image(file=paste0(workDir,"results5_amended.Rdata"))
 
 #################### figure
 load(paste0(workDir,"rev_results.Rdata"))
