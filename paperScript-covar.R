@@ -1,12 +1,13 @@
 # Schizophrenia-linked genetic influences on cognition
-# Authors: AMC & ABZ, Nov 2015
+# Authors: AMC & ABZ, May 2017
 
 # control analyses for revision
-# exclude patients from discovery 
+# add covariates in training 
 
 #### Housekeeping
-libs <- c("ggplot2", "RColorBrewer", "glmnet", "caret", "gbm", "randomForest",
-          "plyr", "foreach", "doMC", "psych", "dplyr", "nlme", "psych","stringr", "r2glmm")
+libs <- c("ggplot2", "RColorBrewer", "glmnet", "caret", "pROC", "permute", "gbm", "randomForest",
+          "plyr", "foreach", "doMC", "psych", "e1071", "dplyr", "nlme", 
+          "psych","stringr", "r2glmm")
 invisible(lapply(libs, require, character.only = TRUE))
 registerDoMC(detectCores()-1)
 
@@ -37,7 +38,7 @@ swe.df.pc <- merge(sweden_snp, swe.pc, by = "IID")
 
 # Names of snps and outcomes
 snps       <- names(cnp.df.pc)[12:88]
-covar      <- names(cnp.df.pc)[c(2,3,90:99)]
+covar      <- names(cnp.df.pc)[c(2,3,90:94)]
 outcomes   <- names(cnp.df.pc)[5:11]
 pred_all   <- c(snps,covar)
 
@@ -45,40 +46,20 @@ pred_all   <- c(snps,covar)
 names(swe.df.pc)[8:14] <- outcomes 
 # Some proxy snps used, need to rename
 names(swe.df.pc)[71:73] <- c("rs2535627", "rs4388249", "rs2905426")
-names(swe.df.pc)[c(6,7,94:103)] <- covar
+names(swe.df.pc)[c(6,7,94:98)] <- covar
 
 # Remove subjects with missing outcomes in CNP
-# remove patients
 cnp.df     <- cnp.df.pc[(complete.cases(cnp.df.pc$CRT_TIME1)),]
-cnp.df     <- cnp.df[cnp.df$Group=="control",] # N = 645
 swe.df     <- swe.df.pc 
 
 # set predictors and targets
-predictors <- cnp.df %>% dplyr::select(one_of(snps)) %>% as.matrix() 
+predictors <- cnp.df %>% dplyr::select(one_of(pred_all)) %>% as.matrix() 
 targets    <- cnp.df %>% dplyr::select(one_of(outcomes)) %>% apply(2,as.numeric) %>% as.data.frame()
 
 #  apply scaling
 means    <- apply(targets,2,mean)
 sds      <- apply(targets,2,sd)
 targets  <- apply(targets, 2, function(i) (i-mean(i))/sd(i)) %>% as.data.frame
-
-
-# create residual variables for all predictors and outcomes
-# pred.tar    <- c(outcomes, snps) # things to get residuals from
-resid.input <- cbind(targets,cnp.df[c(snps,covar)])
-resid       <- lapply(outcomes, function(x) {
-  lm(eval(substitute(i ~ age + gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
-                     list(i = as.name(x)))), data = resid.input)
-})
-
-resid_vals        <- lapply(resid, function(x) residuals(x)) %>% as.data.frame()
-names(resid_vals) <- outcomes
-
-#reset targets and predictions to residuals
-# predictors <- resid_vals %>% dplyr::select(one_of(snps)) %>% as.matrix() 
-targets    <- resid_vals %>% dplyr::select(one_of(outcomes)) %>% apply(2,as.numeric) %>% as.data.frame()
-
-
 
 ### Machine Learning preparation
 ## Set up cross validation
@@ -97,7 +78,7 @@ rfGrid     <- expand.grid(.mtry = c(3,4,10))
 ##### ##### ##### ##### ##### 
 
 glmPipeline <- function(response, Xmat = predictors, cvpar = fitControl,...){
-  set.seed(2)
+  set.seed(1)
   model <- train(x = Xmat, y = response,
                  method = "glm",
                  metric = "Rsquared",
@@ -112,7 +93,7 @@ glm.perfs    <- lapply(glm.loop, function(i) i[[2]])
 
 
 rfPipeline <- function(response, Xmat = predictors, grid = rfGrid, cvpar = fitControl,...){
-  set.seed(2)
+  set.seed(1)
   model <- train(x = Xmat, y = response,
                  method = "rf",
                  metric = "Rsquared",
@@ -129,14 +110,11 @@ rf.models   <- lapply(rf.loop, function(i) i[[1]])
 rf.perfs    <- lapply(rf.loop, function(i) i[[2]])
 
 
-
 #### External Replication
-# N = 364
 raw_rep1 <- swe.df[!apply(swe.df[,c(outcomes)], 1, function(x) (mean(is.na(x))==1)),] #rm NAs
-# raw_rep  <- raw_rep1[complete.cases(raw_rep1[,c(covar)]),] # N = 359
-raw_rep  <- raw_rep1[complete.cases(raw_rep1),] # N = 336
+raw_rep  <- raw_rep[complete.cases(raw_rep1[,c(covar)]),] # N = 359
 
-rep.predictors <- raw_rep %>% dplyr::select(one_of(snps)) %>% as.matrix
+rep.predictors <- raw_rep %>% dplyr::select(one_of(pred_all)) %>% as.matrix
 rep.outcomes   <- raw_rep %>% dplyr::select(one_of(outcomes))
 
 # multiply outcomes to fit CNP scales
@@ -154,23 +132,10 @@ rep.outcomes$VR2DR_TOTALRAW <- rep.outcomes$VR2DR_TOTALRAW * .398
 rep.outcomes.s   <- (rep.outcomes - means)/sds
 rep.outcomes.s   <- apply(rep.outcomes.s, 2, function(i) psych::winsor(i, trim=0.01))
 
-# create residual variables for all predictors and outcomes
-resid_swe.input <- cbind(rep.predictors,rep.outcomes.s,raw_rep[,covar]) %>% as.data.frame
-resid_swe <- lapply(outcomes, function(x) {
-  lm(eval(substitute(i ~ age + gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
-                     list(i = as.name(x)))), data = resid_swe.input)
-})
 
-resid_swe_vals        <- lapply(resid_swe, function(x) residuals(x)) %>% as.data.frame()
-names(resid_swe_vals) <- outcomes
+rf.pred.tr        <- lapply(rf.models, function(i) predict(i, newdata=rep.predictors))
+glm.pred.tr       <- lapply(glm.models, function(i) predict(i, newdata=rep.predictors))
 
-#reset targets and predictions to residuals
-# rep.predictors <- resid_swe_vals %>% dplyr::select(one_of(snps)) %>% as.matrix() 
-rep.targets    <- resid_swe_vals %>% dplyr::select(one_of(outcomes)) %>% apply(2,as.numeric) %>% as.data.frame()
-
-# apply models to swedish dataset
-rf.pred.tr     <- lapply(rf.models, function(i) predict(i, newdata=rep.predictors))
-glm.pred.tr    <- lapply(glm.models, function(i) predict(i, newdata=rep.predictors))
 
 ##### ##### ##### ##### ##### 
 ##### Mixed effects models controlling for family ID
@@ -178,7 +143,7 @@ glm.pred.tr    <- lapply(glm.models, function(i) predict(i, newdata=rep.predicto
 
 rf.pred  <- rf.pred.tr %>% as.data.frame
 glm.pred <- glm.pred.tr %>% as.data.frame
-mix <- cbind(rep.targets, rf.pred, glm.pred, raw_rep[,"FID.x"]) %>% as.data.frame
+mix <- cbind(rep.outcomes.s, rf.pred, glm.pred, raw_rep[,"FID.x"]) %>% as.data.frame
 
 outcomes.rf <- NULL  # start empty list
 outcomes.glm <- NULL
@@ -190,7 +155,7 @@ names(mix)[8:14]  <- outcomes.rf
 names(mix)[15:21] <- outcomes.glm
 names(mix)[22]    <- "fid"
 
-outstats <- matrix(nrow=7,ncol=13)
+outstats <- matrix(nrow=7,ncol=7)
 for (i in 1:length(outcomes)){
   f1 <- formula(paste0(outcomes[i],"~",outcomes[i],".rf"))
   f2 <- formula(paste0(outcomes[i],"~",outcomes[i],".glm"))
@@ -202,28 +167,25 @@ for (i in 1:length(outcomes)){
   outstats[i,2] <- summary(m1)$tTable[2,4]
   outstats[i,3] <- summary(m1)$tTable[2,5]
   outstats[i,4] <- r2m1[r2m1$Effect==paste0(outcomes[i],".rf"), 6]
-  outstats[i,5] <- sqrt(mean(m1$residuals^2))
-  outstats[i,6] <- mean(m1$residuals^2)
-  outstats[i,7] <- summary(m2)$tTable[2,4]
-  outstats[i,8] <- summary(m2)$tTable[2,5]
-  outstats[i,9] <- r2m2[r2m2$Effect==paste0(outcomes[i],".glm"), 6]
-  outstats[i,10] <- sqrt(mean(m2$residuals^2))
-  outstats[i,11] <- mean(m2$residuals^2)
-  outstats[i,12] <- summary(m1)$tTable[2,5]/2
-  outstats[i,13] <- summary(m2)$tTable[2,5]/2
+  outstats[i,5] <- summary(m2)$tTable[2,4]
+  outstats[i,6] <- summary(m2)$tTable[2,5]
+  outstats[i,7] <- r2m2[r2m2$Effect==paste0(outcomes[i],".glm"), 6]
 }
 
 outstats        <- as.data.frame(outstats, stringsAsFactors = F)
-outstats[,2:13]  <- lapply(outstats[,2:13], as.numeric)
-names(outstats) <- c("var", "tval.rf", "pval.rf", "r2.rf", "rmse.rf", "mse.rf",
-                     "tval.glm", "pval.glm", "r2.glm", "rmse.glm", "msf.rf", 
-                     "pval.rf.onetail", "pval.glm.onetail")
+outstats[,2:7]  <- lapply(outstats[,2:7], as.numeric)
+names(outstats) <- c("var","tval.rf","pval.rf","r2.rf", "tval.glm","pval.glm", "r2.glm")
 
-write.table(outstats, "revision2/covar-resid-targets-10PCs-controldisc.txt", 
-            col.names=T, row.names=F, sep="\t", quote=F)
+write.table(outstats, "revision1/covar-in-training.txt", col.names=T, row.names=F, sep="\t", quote=F)
 
-save.image("revision2/covar-resid-targets-10PCs-controldisc.RData")
+save.image("../covar-in-training.RData")
 
+# CNP correlations and p-values
+glm.r2     <- unlist(lapply(glm.perfs, function(x) x$TrainRsquared))
+rf.r2      <- unlist(lapply(rf.perfs, function(x) x$TrainRsquared))
 
-
+r2   <- rbind(glm.r2,unname(rf.r2))
+rval <- apply(r2,2,sqrt)
+tval <- apply(r2,2,function(x) sqrt((737*x)/(1-x)))
+pval <- apply(tval,2,function(x) 2*(1-abs(pt(x,df=737))))
 
